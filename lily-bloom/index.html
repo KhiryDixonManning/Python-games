@@ -113,19 +113,42 @@ const T = {
   sway: 13.5,
 };
 
+// the bouquet: every entry is the same lily, grown with its own lean, stem length, scale,
+// depth, delay and leaves. The original single lily is kept as-is and opens with #single.
+const SINGLE = [
+  { a: 0, len: 2.35, sc: 1, ox: 0, oz: 0, t0: 0, ph: 0, leaves: [[-1, 1.0 / 2.35, T.leafA], [1, 1.55 / 2.35, T.leafB]] },
+];
+// tx, ty: where each head ends up (three tiers, root at 0,-2.35); sc: size; oz: depth, + is toward you; t0: when it starts
+const BOUQUET = [
+  { tx:  0.00, ty:  0.95, sc: 0.78, ox:  0.00, oz: -0.45, t0: 0.0, ph: 0.0, leaves: [[-1, 0.42, T.leafA], [1, 0.62, T.leafB]] },
+  { tx: -1.05, ty:  0.35, sc: 0.72, ox: -0.06, oz: -0.25, t0: 0.9, ph: 1.1, leaves: [[1, 0.50, T.leafB]] },
+  { tx:  1.05, ty:  0.40, sc: 0.72, ox:  0.06, oz: -0.25, t0: 1.7, ph: 2.3, leaves: [[-1, 0.46, T.leafA]] },
+  { tx: -1.75, ty: -0.75, sc: 0.68, ox: -0.12, oz:  0.05, t0: 2.6, ph: 3.6, leaves: [[-1, 0.55, T.leafA], [1, 0.35, T.leafB]] },
+  { tx:  1.75, ty: -0.70, sc: 0.68, ox:  0.12, oz:  0.05, t0: 3.4, ph: 4.4, leaves: [[1, 0.52, T.leafB]] },
+  { tx:  0.00, ty: -0.55, sc: 0.80, ox:  0.02, oz:  0.45, t0: 4.3, ph: 5.2, leaves: [[-1, 0.50, T.leafA], [1, 0.70, T.leafB]] },
+  { tx: -0.95, ty: -1.50, sc: 0.62, ox: -0.18, oz:  0.30, t0: 5.1, ph: 0.6, leaves: [[1, 0.60, T.leafB]] },
+  { tx:  0.95, ty: -1.45, sc: 0.62, ox:  0.18, oz:  0.30, t0: 5.9, ph: 1.9, leaves: [[-1, 0.58, T.leafA]] },
+];
+const FLOWERS = location.hash === '#single' ? SINGLE : BOUQUET;
+const LAST_T0 = Math.max(...FLOWERS.map(f => f.t0));
+const REDUCED = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+let F = FLOWERS[0];                                    // the flower being built right now
+for (const f of FLOWERS) { f.a = f.a || 0; f.lc = cos(f.a); f.ls = sin(f.a); f.ft = -1; f.gl = 0; f.ow = [0, 0, 0]; f.gw = [0, 0, 0]; }
+const HC = [0, 0, 0.7]; let HEART_SC = 1.3;            // where the heart of light forms, and how big
+
 /* ---------------- canvas, grid and the cell buffers ---------------- */
 const stage = document.getElementById('stage');
 const main = document.getElementById('main'), glowC = document.getElementById('glow');
 const mctx = main.getContext('2d'), gctx = glowC.getContext('2d');
 const layer = document.createElement('canvas'); const lctx = layer.getContext('2d');
-let W = 0, H = 0, dpr = 1, cols = 0, rows = 0, cellW = 8, cellH = 12, fontPx = 10, S = 100, yc = -0.78, cx = 0, cy = 0;
+let W = 0, H = 0, dpr = 1, dprCap = 2, cols = 0, rows = 0, cellW = 8, cellH = 12, fontPx = 10, S = 100, yc = -0.78, cx = 0, cy = 0;
 const D = 7;                       // camera distance
 const Y_BASE = -2.35, STEM_LEN = 2.35;   // where the stem meets the dark, and how far it climbs
 let zb, cc, cr, cg, cb, ca, stars = [];
 
 function resize() {
   const r = stage.getBoundingClientRect(); W = max(1, r.width | 0); H = max(1, r.height | 0);
-  dpr = min(window.devicePixelRatio || 1, 2);
+  dpr = min(window.devicePixelRatio || 1, dprCap);
   main.width = layer.width = W * dpr; main.height = layer.height = H * dpr;
   glowC.width = max(1, (W * dpr / 2.5) | 0); glowC.height = max(1, (H * dpr / 2.5) | 0);
   cellH = max(7, min(13, H / 74)); fontPx = cellH * 0.96;
@@ -136,14 +159,31 @@ function resize() {
   cols = max(1, floor(W / cellW)); rows = max(1, floor(H / cellH)); cx = cols / 2; cy = rows / 2 + 0.5;
   const n = cols * rows;
   zb = new Float32Array(n); cc = new Uint8Array(n); cr = new Uint8ClampedArray(n); cg = new Uint8ClampedArray(n); cb = new Uint8ClampedArray(n); ca = new Float32Array(n);
-  S = min(rows * cellH * 0.86 / 3.6, cols * cellW * 0.9 / 2.7);
+  if (FLOWERS === SINGLE) {
+    S = min(rows * cellH * 0.86 / 3.6, cols * cellW * 0.9 / 2.7); yc = -0.78;
+    HC[0] = stemX(0); HC[1] = 0; HEART_SC = 1.3;
+  } else {
+    // fit the whole bouquet: the fan narrows and stretches taller on phone screens
+    const aspect = W / H, spreadK = max(0.72, min(1, aspect * 1.1)), tallK = aspect < 0.85 ? 1.2 : 1;
+    let xExt = 0, yTop = -9;
+    for (const f of FLOWERS) {
+      const tx = f.tx * spreadK, ty = Y_BASE + (f.ty - Y_BASE) * tallK;
+      f.a = Math.atan2(tx - f.ox, ty - Y_BASE); f.lc = cos(f.a); f.ls = sin(f.a);
+      f.len = Math.hypot(tx - f.ox, ty - Y_BASE) / f.sc;        // each stem reaches its own head
+      xExt = max(xExt, abs(tx) + 1.05 * f.sc); yTop = max(yTop, ty + 0.95 * f.sc);
+    }
+    const yBot = Y_BASE - 0.3;
+    S = min(rows * cellH * 0.92 / (yTop - yBot), cols * cellW * 0.94 / (2 * xExt));
+    yc = (yTop + yBot) / 2;
+    HC[0] = 0; HC[1] = yc + 0.05; HEART_SC = min(xExt * 0.95, (yTop - yBot) * 0.45);
+  }
   mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   gctx.setTransform(dpr / 2.5, 0, 0, dpr / 2.5, 0, 0);
-  makeStars();
+  if (stars.length === 0 || stars.W !== W || stars.H !== H) makeStars();
 }
 
 function makeStars() {
-  stars = [];
+  stars = []; stars.W = W; stars.H = H;
   const n = floor(W * H / 3200);
   for (let i = 0; i < n; i++) stars.push({ x: rnd() * W, y: rnd() * H, a: 0.12 + rnd() * 0.5, ph: rnd() * TAU, sp: 0.4 + rnd() * 1.6, big: rnd() < 0.05, r: 5 + rnd() * 12, pink: rnd() < 0.15 });
 }
@@ -196,17 +236,21 @@ function lights(t) {
   let rx = cos(t * 0.8), ry = 0.4, rz = sin(t * 0.8), rl = sqrt(rx * rx + ry * ry + rz * rz); RX = rx / rl; RY = ry / rl; RZ = rz / rl;
 }
 
-function sway(t) {
+function sway(t, ph = 0) {
+  if (REDUCED) return 0;
   const u = smooth((t - T.sway) / 5);
-  return u ? 0.2 * sin((t - T.sway) * 0.5) * u : 0;
+  return u ? (FLOWERS === SINGLE ? 0.2 : 0.12) * sin((t - T.sway) * 0.5 + ph) * u : 0;
 }
-function bend(t) {
+function bend(t, ph = 0) {
+  if (REDUCED) return 0;
   const u = smooth((t - T.sway) / 5);
-  return u ? 0.035 * sin((t - T.sway) * 0.33 + 1) * u : 0;
+  return u ? (FLOWERS === SINGLE ? 0.035 : 0.025) * sin((t - T.sway) * 0.33 + 1 + ph) * u : 0;
 }
 
 let swC = 1, swS = 0, bendK = 0;
-function xf(x, y, z, o, i) {                 // sway the whole plant around its root
+function xf(x, y, z, o, i) {                 // flower-local → bouquet (scale, lean, offset) → sway the plant around its root
+  const yr = (y - Y_BASE) * F.sc, xs = x * F.sc;
+  x = F.lc * xs + F.ls * yr + F.ox; y = Y_BASE + F.lc * yr - F.ls * xs; z = z * F.sc + F.oz;
   x += (y - Y_BASE) * bendK;
   o[i] = swC * x + swS * z; o[i + 1] = y; o[i + 2] = -swS * x + swC * z;
 }
@@ -241,66 +285,71 @@ function emit(nS, nW, mat) {
 
 // the stem: a gentle s-curve, lit from the front
 function stemX(y) { return 0.04 * sin((y - Y_BASE) * 1.5); }
-const ST_S = 150, ST_W = 7;
+let stS = 150, stW = 7;
 let mTop = 0;
 function stemMat(k, j, dl, rim, sp, o) {
-  const y = k / (ST_S - 1);
+  const y = k / (stS - 1);
   const v = 0.18 + 0.6 * dl + 0.25 * rim + 0.5 * sp;
   const m = 0.5 + 0.7 * v;
   o.r = lerp(C_STEM_DK[0], C_STEM[0], v) * m; o.g = lerp(C_STEM_DK[1], C_STEM[1], v) * m; o.b = lerp(C_STEM_DK[2], C_STEM[2], v) * m;
-  o.v = v + 0.15 * sin(y * 40 + k); o.a = 1; o.edge = j === 0 || j === ST_W - 1;
+  o.v = v + 0.15 * sin(y * 40 + k); o.a = 1; o.edge = j === 0 || j === stW - 1;
 }
 function stemRefl(k, j, dl, rim, sp, o) {
-  const f = 1 - k / (ST_S - 1);
+  const f = 1 - k / (stS - 1);
   o.r = 40; o.g = 120; o.b = 80; o.v = 0.3 * dl + 0.1; o.a = 0.14 * f * f; o.edge = false;
 }
 function buildStem(t) {
   const g = 1 - (1 - span(t, T.stem[0], T.stem[1])) ** 3;
-  mTop = Y_BASE + STEM_LEN * g;
+  mTop = Y_BASE + F.len * g;
   if (g <= 0.002) return g;
-  const rad = 0.045;
-  for (let k = 0; k < ST_S; k++) {
-    const y = Y_BASE + (mTop - Y_BASE) * k / (ST_S - 1), x0 = stemX(y);
-    for (let j = 0; j < ST_W; j++) {
-      const a = -PI / 2 + PI * j / (ST_W - 1);
-      xf(x0 + rad * sin(a), y, rad * cos(a), P, (k * ST_W + j) * 3);
+  // sample about twice per screen row; the single lily keeps its original density
+  if (F.sc === 1) { stS = 150; stW = 7; } else { stS = min(150, max(40, Math.round(2.2 * F.len * F.sc * S / cellH))); stW = 5; }
+  const rad = 0.045 / F.sc;                          // stems stay the same thickness on screen
+  for (let k = 0; k < stS; k++) {
+    const y = Y_BASE + (mTop - Y_BASE) * k / (stS - 1), x0 = stemX(y);
+    for (let j = 0; j < stW; j++) {
+      const a = -PI / 2 + PI * j / (stW - 1);
+      xf(x0 + rad * sin(a), y, rad * cos(a), P, (k * stW + j) * 3);
     }
   }
-  emit(ST_S, ST_W, stemMat);
+  emit(stS, stW, stemMat);
   // a faint reflection below the root
   const nR = 36;
   for (let k = 0; k < nR; k++) {
-    const y = Y_BASE + (mTop - Y_BASE) * k / (ST_S - 1) * 1.0, x0 = stemX(y);
-    for (let j = 0; j < ST_W; j++) { const a = -PI / 2 + PI * j / (ST_W - 1); xf(x0 + rad * sin(a), 2 * Y_BASE - y - 0.08, rad * cos(a) - 0.3, P, (k * ST_W + j) * 3); }
+    const y = Y_BASE + (mTop - Y_BASE) * k / (stS - 1), x0 = stemX(y);
+    for (let j = 0; j < stW; j++) { const a = -PI / 2 + PI * j / (stW - 1); xf(x0 + rad * sin(a), 2 * Y_BASE - y - 0.08, rad * cos(a) - 0.3, P, (k * stW + j) * 3); }
   }
-  emit(nR, ST_W, stemRefl);
+  emit(nR, stW, stemRefl);
   return g;
 }
 
 // leaves: lanceolate, parallel veins, a pale midrib, a slow unfolding
-const LF_S = 34, LF_W = 13;
+let lfS = 34; const LF_W = 13;
+const LF_RIB = [], LF_VEIN = [];                                  // across-the-blade profiles, computed once
+for (let j = 0; j < LF_W; j++) { const aw = abs(-1 + 2 * j / (LF_W - 1)); LF_RIB.push(exp(-((aw / 0.09) ** 2)) * 0.6); LF_VEIN.push((exp(-(((aw - 0.4) / 0.06) ** 2)) + exp(-(((aw - 0.74) / 0.06) ** 2))) * 0.22); }
 let mSide = 1;
 function leafMat(k, j, dl, rim, sp, o) {
-  const s = k / (LF_S - 1), w = -1 + 2 * j / (LF_W - 1), aw = abs(w);
+  const s = k / (lfS - 1);
   const f = s ** 1.2;
   let r = lerp(C_LEAF[0], C_LEAF_TIP[0], f), g = lerp(C_LEAF[1], C_LEAF_TIP[1], f), b = lerp(C_LEAF[2], C_LEAF_TIP[2], f);
-  const rib = exp(-((aw / 0.09) ** 2)) * 0.6;
+  const rib = LF_RIB[j];
   r = lerp(r, C_RIB[0], rib); g = lerp(g, C_RIB[1], rib); b = lerp(b, C_RIB[2], rib);
-  const vein = (exp(-(((aw - 0.4) / 0.06) ** 2)) + exp(-(((aw - 0.74) / 0.06) ** 2))) * 0.22;
+  const vein = LF_VEIN[j];
   const v = 0.25 + 0.5 * dl + 0.25 * rim + 0.25 * sp;
   const m = (0.5 + 0.7 * v) * (1 - vein);
-  o.r = r * m; o.g = g * m; o.b = b * m; o.v = v - vein; o.a = 1; o.edge = j === 0 || j === LF_W - 1 || k === LF_S - 1;
+  o.r = r * m; o.g = g * m; o.b = b * m; o.v = v - vein; o.a = 1; o.edge = j === 0 || j === LF_W - 1 || k === lfS - 1;
 }
 function buildLeaf(t, side, yAt, win) {
   const u = smoother(span(t, win[0], win[1])); if (u <= 0) return;
-  const L = 0.95 * (0.2 + 0.8 * u), ds = L / (LF_S - 1);
+  lfS = F.sc === 1 ? 34 : min(34, max(14, Math.round(2 * 0.95 * F.sc * S / cellH)));
+  const L = 0.95 * (0.2 + 0.8 * u), ds = L / (lfS - 1);
   const az = 0.38;
   const hx = side * cos(az), hz = sin(az);                 // out to the side, a little toward you
   const nfy = 0.33, nfz = 0.944;                           // the blade faces the viewer
   let px = stemX(yAt) + side * 0.03, py = yAt, pz = 0.03;
   mSide = side;
-  for (let k = 0; k < LF_S; k++) {
-    const s = k / (LF_S - 1);
+  for (let k = 0; k < lfS; k++) {
+    const s = k / (lfS - 1);
     const e = lerp(1.3, 0.75 - 0.7 * s, u);                // hugs the stem, then rises and droops
     const tx = cos(e) * hx, ty = sin(e), tz = cos(e) * hz;
     if (k) { px += tx * ds; py += ty * ds; pz += tz * ds; }
@@ -314,7 +363,7 @@ function buildLeaf(t, side, yAt, win) {
       xf(px + off * wx, py + off * wy + dep * nfy, pz + off * wz + dep * nfz, P, (k * LF_W + j) * 3);
     }
   }
-  emit(LF_S, LF_W, leafMat);
+  emit(lfS, LF_W, leafMat);
 }
 
 // the flower sits on the tip of the stem and looks up toward you
@@ -330,7 +379,7 @@ function budScale(t) { const u = smoother(span(t, T.bud[0], T.bud[1])); return u
 function bloom(t) {
   // 0 = tight bud, 1 = full lily; the petals unfold slowly, then breathe
   const u = smoother(span(t, T.bloom[0], T.bloom[1]));
-  return u + 0.015 * sin(t * 1.2) * smooth((t - T.bloom[1]) / 2);
+  return u + (REDUCED ? 0 : 0.015 * sin(t * 1.2) * smooth((t - T.bloom[1]) / 2));
 }
 function petalOpen(i, u) {
   const d = (i % 2 ? 0.2 : 0) + 0.03 * (i % 3);          // the outer three lead the inner three
@@ -338,33 +387,35 @@ function petalOpen(i, u) {
 }
 
 // six tepals: narrow at the base, widest near the middle, pointed and curled back at the tip
-const PN_S = 42, PN_W = 15;
+let pnS = 42; const PN_W = 15;
+const PN_VEIN = [], PN_THR = new Float32Array(64);                // vein profile across, throat glow along
+for (let j = 0; j < PN_W; j++) { const w = -1 + 2 * j / (PN_W - 1); let v = 0; for (let q = 0; q < 5; q++) { const d = (w - VEINS[q][0]) / 0.07; v += VEINS[q][1] * exp(-d * d); } PN_VEIN.push(v); }
 let mPetal = 0, mOpen = 0, mGlow = 0;
 function petalMat(k, j, dl, rim, sp, o) {
-  const s = k / (PN_S - 1), w = -1 + 2 * j / (PN_W - 1);
+  const s = k / (pnS - 1), w = -1 + 2 * j / (PN_W - 1);
   const g = GRAD[floor(s * 63)]; let r = g[0], gg = g[1], b = g[2];
-  let v = 0;
-  for (let q = 0; q < 5; q++) { const d = (w - VEINS[q][0]) / 0.07; v += VEINS[q][1] * exp(-d * d); }
-  v *= 0.42 * smooth((s - 0.05) / 0.15) * (1 - 0.5 * s);
+  const v = PN_VEIN[j] * 0.42 * smooth((s - 0.05) / 0.15) * (1 - 0.5 * s);
   r = lerp(r, C_VEIN[0], v); gg = lerp(gg, C_VEIN[1], v); b = lerp(b, C_VEIN[2], v);
   if (s > 0.1 && s < 0.5 && hash(mPetal, k, j) < 0.11) { r = lerp(r, C_FRECKLE[0], 0.4); gg = lerp(gg, C_FRECKLE[1], 0.4); b = lerp(b, C_FRECKLE[2], 0.4); }
-  const th = mGlow * exp(-s * 4.5);
+  const th = mGlow * PN_THR[k];
   r = lerp(r, C_THROAT[0], th * 0.7); gg = lerp(gg, C_THROAT[1], th * 0.7); b = lerp(b, C_THROAT[2], th * 0.7);
   const hl = sp * 0.55;
   r = lerp(r, C_HILITE[0], hl); gg = lerp(gg, C_HILITE[1], hl); b = lerp(b, C_HILITE[2], hl);
   const lv = 0.28 + 0.5 * dl + 0.3 * rim + 0.4 * sp + th * 0.6;
   const m = 0.55 + 0.65 * clamp01(lv);
   o.r = r * m; o.g = gg * m; o.b = b * m; o.v = lv - v * 0.6; o.a = 1;
-  o.edge = j === 0 || j === PN_W - 1 || k === PN_S - 1;
+  o.edge = j === 0 || j === PN_W - 1 || k === pnS - 1;
 }
 function buildPetal(i, open, L, glow) {
   const phi = i * PI / 3 + PI / 2; rdir(phi, R_); tdir(phi, T_);
-  const ds = L / (PN_S - 1);
+  pnS = F.sc === 1 ? 42 : min(42, max(20, Math.round(2 * L * S / cellH)));
+  for (let k = 0; k < pnS; k++) PN_THR[k] = exp(-k / (pnS - 1) * 4.5);
+  const ds = L / (pnS - 1);
   let r = lerp(0.05, 0.1, open), h = 0.0;
   const Wmax = lerp(0.125, 0.2, open) * L;
   const cup = lerp(0.9, -0.3, open), twist = (1 - open) * 0.35;
-  for (let k = 0; k < PN_S; k++) {
-    const s = k / (PN_S - 1);
+  for (let k = 0; k < pnS; k++) {
+    const s = k / (pnS - 1);
     const th = lerp(0.15 + 0.05 * s - 0.6 * s * s, 0.4 + 1.25 * s ** 1.6, open);
     if (k) { r += sin(th) * ds; h += cos(th) * ds; }
     const hw = Wmax * sin(PI * (0.06 + 0.94 * s)) ** 0.85;
@@ -379,7 +430,7 @@ function buildPetal(i, open, L, glow) {
     }
   }
   mPetal = i; mOpen = open; mGlow = glow;
-  emit(PN_S, PN_W, petalMat);
+  emit(pnS, PN_W, petalMat);
 }
 
 // stamens: six filaments, each tipped with a rust anther, and one pale pistil
@@ -439,7 +490,7 @@ function heartPoints() {
   const N = 230;
   for (let i = 0; i < N; i++) {
     const a = i / N * TAU, s3 = sin(a) ** 3;
-    HEART.push([16 * s3 / 17 * 1.3, (13 * cos(a) - 5 * cos(2 * a) - 2 * cos(3 * a) - cos(4 * a)) / 17 * 1.3 + 0.12]);
+    HEART.push([16 * s3 / 17, (13 * cos(a) - 5 * cos(2 * a) - 2 * cos(3 * a) - cos(4 * a)) / 17]);
   }
 }
 heartPoints();
@@ -449,29 +500,46 @@ function spawn(kind, x, y, z, vx, vy, vz, life, c, ch) {
   parts.push({ kind, x, y, z, vx, vy, vz, life, age: 0, c, ch, ph: rnd() * TAU, hx: 0, hy: 0 });
 }
 let heartSpawned = false;
+const HW = [0, 0, 0];
+function headWorld(ft, o) {                   // where this flower's head is in bouquet space, sway aside
+  const g = 1 - (1 - span(ft, T.stem[0], T.stem[1])) ** 3, top = Y_BASE + F.len * g;
+  const c = swC, s = swS, b = bendK; swC = 1; swS = 0; bendK = 0;
+  xf(stemX(top), top, 0, o, 0);
+  swC = c; swS = s; bendK = b;
+}
 function step(t, dt) {
   // ambient drifters, always
   let amb = 0; for (const p of parts) if (p.kind === 0) amb++;
-  while (amb < 70) { spawn(0, -2.4 + rnd() * 4.8, -3.3 + rnd() * 5, -1 + rnd() * 2, (rnd() - 0.5) * 0.03, 0.015 + rnd() * 0.04, 0, 8 + rnd() * 8, rnd() < 0.3 ? C_BLUSH : [215, 215, 222], DUST[floor(rnd() * 3)]); amb++; }
-  // sparks off the growing stem
-  const g = span(t, T.stem[0], T.stem[1]);
-  if (g > 0 && g < 1) for (let n = 0; n < 2; n++) {
-    const a = rnd() * TAU, sp = 0.2 + rnd() * 0.7;
-    spawn(1, FC[0], FC[1], 0.05, cos(a) * sp, 0.1 + rnd() * 0.5, sin(a) * sp * 0.4, 0.5 + rnd() * 0.7, rnd() < 0.5 ? C_GOLD : C_THROAT, DUST[floor(rnd() * 3)]);
-  }
-  // sparkles around the opening flower
-  if (t > T.bloom[0]) {
-    const rate = (6 + 22 * bloom(t)) * dt; let n = rate | 0; if (rnd() < rate - n) n++;
-    for (let q = 0; q < n; q++) {
-      const a = rnd() * TAU, rr = 0.45 + rnd() * 1.0, el = (rnd() - 0.5) * PI;
-      spawn(2, FC[0] + cos(a) * cos(el) * rr, FC[1] + sin(el) * rr * 0.9 + 0.1, FC[2] + sin(a) * cos(el) * rr, (rnd() - 0.5) * 0.12, 0.06 + rnd() * 0.18, 0, 1.6 + rnd() * 2.2, SPARK[floor(rnd() * SPARK.length)], DUST[1 + floor(rnd() * 2)]);
+  while (amb < (REDUCED ? 25 : 70)) { spawn(0, -2.4 + rnd() * 4.8, -3.3 + rnd() * 5, -1 + rnd() * 2, (rnd() - 0.5) * 0.03, 0.015 + rnd() * 0.04, 0, 8 + rnd() * 8, rnd() < 0.3 ? C_BLUSH : [215, 215, 222], DUST[floor(rnd() * 3)]); amb++; }
+  const share = 1 / sqrt(FLOWERS.length) * (REDUCED ? 0.4 : 1);
+  for (const f of FLOWERS) {
+    F = f; const ft = t - f.t0; if (ft <= 0) continue;
+    headWorld(ft, HW);
+    // sparks off the growing stem
+    const g = span(ft, T.stem[0], T.stem[1]);
+    if (g > 0 && g < 1) {
+      let n = 2 * share, k = n | 0; if (rnd() < n - k) k++;
+      for (; k > 0; k--) {
+        const a = rnd() * TAU, sp = 0.2 + rnd() * 0.7;
+        spawn(1, HW[0], HW[1], HW[2] + 0.05, cos(a) * sp, 0.1 + rnd() * 0.5, sin(a) * sp * 0.4, 0.5 + rnd() * 0.7, rnd() < 0.5 ? C_GOLD : C_THROAT, DUST[floor(rnd() * 3)]);
+      }
+    }
+    // sparkles around the opening flower
+    if (ft > T.bloom[0]) {
+      const rate = (6 + 22 * bloom(ft)) * dt * share; let n = rate | 0; if (rnd() < rate - n) n++;
+      for (let q = 0; q < n; q++) {
+        const a = rnd() * TAU, rr = (0.45 + rnd() * 1.0) * f.sc, el = (rnd() - 0.5) * PI;
+        spawn(2, HW[0] + cos(a) * cos(el) * rr, HW[1] + sin(el) * rr * 0.9 + 0.1 * f.sc, HW[2] + sin(a) * cos(el) * rr, (rnd() - 0.5) * 0.12, 0.06 + rnd() * 0.18, 0, 1.6 + rnd() * 2.2, SPARK[floor(rnd() * SPARK.length)], DUST[1 + floor(rnd() * 2)]);
+      }
     }
   }
-  // a heart of light around the finished lily
-  if (t >= T.heart[0] && !heartSpawned) {
+  // a heart of light around the finished bouquet
+  if (t >= LAST_T0 + T.heart[0] && !heartSpawned) {
     heartSpawned = true;
-    for (const [hx, hy] of HEART) {
-      const p = { kind: 3, x: 0, y: 0, z: 0.7, vx: 0, vy: 0, vz: 0, life: T.heart[1] - T.heart[0], age: 0, c: rnd() < 0.25 ? C_THROAT : (rnd() < 0.5 ? C_PINK : C_BLUSH), ch: DUST[1 + floor(rnd() * 2)], ph: rnd() * TAU, hx: FC[0] + hx, hy: FC[1] + hy };
+    const k = HEART_SC, lift = 0.12 * k / 1.3;
+    for (const [hx0, hy0] of HEART) {
+      const hx = hx0 * k, hy = hy0 * k + lift;
+      const p = { kind: 3, x: 0, y: 0, z: HC[2], vx: 0, vy: 0, vz: 0, life: T.heart[1] - T.heart[0], age: 0, c: rnd() < 0.25 ? C_THROAT : (rnd() < 0.5 ? C_PINK : C_BLUSH), ch: DUST[1 + floor(rnd() * 2)], ph: rnd() * TAU, hx: HC[0] + hx, hy: HC[1] + hy };
       p.jx = (rnd() - 0.5) * 0.5; p.jy = (rnd() - 0.5) * 0.5;
       const L = sqrt(hx * hx + hy * hy) + 1e-6; p.vx = hx / L * (0.25 + rnd() * 0.35); p.vy = hy / L * (0.25 + rnd() * 0.35) + 0.12;
       parts.push(p);
@@ -512,26 +580,24 @@ function drawParts(t) {
 }
 
 // a tiny golden light wakes up at the root and rides the growing tip
-function lightOrb(t) {
+function lightOrb(t, w, sc) {
   if (t < T.light) return;
   const amt = smoother(span(t, T.light, T.light + 0.9)) * (1 - smoother(span(t, T.bud[0] + 0.7, T.bud[1] + 0.6)));
   if (amt <= 0) return;
   const fl = 0.85 + 0.15 * sin(t * 13) + 0.1 * sin(t * 29);
-  xf(FC[0], FC[1], 0.06, LP, 0);
-  const f = D / (D - LP[2]);
-  const px = (cx + LP[0] * S * f / cellW) * cellW, py = (cy - (LP[1] - yc) * S * f / cellH) * cellH;
-  const rad = (0.1 + 0.08 * fl) * S * amt;
+  const f = D / (D - w[2]);
+  const px = (cx + w[0] * S * f / cellW) * cellW, py = (cy - (w[1] - yc) * S * f / cellH) * cellH;
+  const rad = (0.1 + 0.08 * fl) * S * amt * sc;
   const grd = lctx.createRadialGradient(px, py, 0, px, py, rad);
   grd.addColorStop(0, `rgba(255,236,190,${0.95 * amt})`); grd.addColorStop(0.35, `rgba(255,155,56,${0.6 * amt})`); grd.addColorStop(1, 'rgba(255,112,79,0)');
   lctx.fillStyle = grd; lctx.fillRect(px - rad, py - rad, rad * 2, rad * 2);
   lctx.fillStyle = `rgba(255,245,215,${amt})`; lctx.fillText('*', px, py);
 }
-function centerGlow(gl) {
+function centerGlow(gl, w, sc) {
   if (gl <= 0) return;
-  xf(FC[0], FC[1], 0.3, LP, 0);
-  const f = D / (D - LP[2]);
-  const px = (cx + LP[0] * S * f / cellW) * cellW, py = (cy - (LP[1] - yc) * S * f / cellH) * cellH;
-  const rad = 0.42 * S;
+  const f = D / (D - w[2]);
+  const px = (cx + w[0] * S * f / cellW) * cellW, py = (cy - (w[1] - yc) * S * f / cellH) * cellH;
+  const rad = 0.42 * S * sc;
   const grd = lctx.createRadialGradient(px, py, 0, px, py, rad);
   grd.addColorStop(0, `rgba(255,210,122,${0.42 * gl})`); grd.addColorStop(0.4, `rgba(255,155,56,${0.2 * gl})`); grd.addColorStop(1, 'rgba(255,112,79,0)');
   lctx.globalCompositeOperation = 'lighter'; lctx.fillStyle = grd; lctx.fillRect(px - rad, py - rad, rad * 2, rad * 2);
@@ -552,27 +618,34 @@ function flushCells() {
   }
   return n;
 }
-function draw(t) {
-  lights(t);
-  const sa = sway(t); swC = cos(sa); swS = sin(sa); bendK = bend(t); swDeg = sa * 180 / PI;
-  clearCells();
-  buildStem(t);
+function drawFlower(f, t) {
+  F = f; const ft = f.ft = t - f.t0;
+  if (ft <= 0) { f.gl = 0; return 0; }
+  const sa = sway(ft, f.ph); swC = cos(sa); swS = sin(sa); bendK = bend(ft, f.ph); swDeg += abs(sa) * 180 / PI;
+  buildStem(ft);
   FC[0] = stemX(mTop); FC[1] = mTop; FC[2] = 0;
-  buildLeaf(t, -1, -1.35, T.leafA);
-  buildLeaf(t, 1, -0.8, T.leafB);
-  const bs = budScale(t), u = bloom(t);
-  const gl = smoother(span(t, T.glow[0], T.glow[1])) * (0.78 + 0.22 * sin(t * 1.7));
-  bloomPct = clamp01(u) * 100;
+  for (const [side, at, win] of f.leaves) buildLeaf(ft, side, Y_BASE + at * f.len, win);
+  const bs = budScale(ft), u = bloom(ft);
+  const gl = f.gl = smoother(span(ft, T.glow[0], T.glow[1])) * (REDUCED ? 0.9 : 0.78 + 0.22 * sin(ft * 1.7));
   if (bs > 0) {
     let avg = 0;
     for (let i = 0; i < 6; i++) { const o = petalOpen(i, u); avg += o; buildPetal(i, min(o, 1.05), bs * 1.15 * (i % 2 ? 0.93 : 1), gl); }
     buildStamens(smoother((avg / 6 - 0.3) / 0.5), gl);
   }
+  xf(FC[0], FC[1], 0.06, f.ow, 0);                   // where the orb and the glow sit, sway included
+  xf(FC[0], FC[1], 0.3, f.gw, 0);
+  return clamp01(u);
+}
+function draw(t) {
+  lights(t);
+  clearCells();
+  let bloomSum = 0; swDeg = 0;
+  for (const f of FLOWERS) bloomSum += drawFlower(f, t);
+  bloomPct = bloomSum / FLOWERS.length * 100; swDeg /= FLOWERS.length;
   lctx.clearRect(0, 0, W, H);
   letters = flushCells();
   letters += drawParts(t);
-  lightOrb(t);
-  centerGlow(gl);
+  for (const f of FLOWERS) if (f.ft > 0) { lightOrb(f.ft, f.ow, f.sc); centerGlow(f.gl, f.gw, f.sc); }
   // glow pass (blurred by css) under the sharp pass
   gctx.clearRect(0, 0, W, H); gctx.drawImage(layer, 0, 0, W, H);
   drawStars(t);
@@ -600,7 +673,7 @@ function buildCode() {
   markers = [
     [0, find('function lightOrb')], [T.stem[0], find('function buildStem')], [T.leafA[0], find('function buildLeaf')],
     [T.bud[0], find('function budScale')], [T.bloom[0], find('function buildPetal')], [T.bloom[0] + 3.5, find('function petalMat')],
-    [T.glow[0] + 0.8, find('function lights')], [T.heart[0], find('function heartPoints')], [T.heart[1], find('function sway')], [T.heart[1] + 6, find('function step')],
+    [T.glow[0] + 0.8, find('function lights')], [LAST_T0 + T.heart[0], find('function heartPoints')], [LAST_T0 + T.heart[1], find('function sway')], [LAST_T0 + T.heart[1] + 6, find('function step')],
   ];
 }
 function updateCode(t) {
@@ -632,9 +705,12 @@ function frame(now) {
   step(t, dt);
   draw(t);
   updateCode(t);
-  frames++; fpsClock += dt; if (fpsClock >= 0.5) { fps = Math.round(frames / fpsClock); frames = 0; fpsClock = 0; }
+  frames++; fpsClock += dt; if (fpsClock >= 0.5) {
+    fps = Math.round(frames / fpsClock); frames = 0; fpsClock = 0;
+    if (FLOWERS !== SINGLE && fps < 42 && dprCap > 1.5 && t > 4) { dprCap = 1.5; resize(); }   // lighter pixels on slower phones
+  }
   if (++hudTick % 4 === 0) updateHud();
-  if (!done && t > T.heart[0] + 2.5) { done = true; msgEl.textContent = MESSAGE; msgEl.style.opacity = 1; replayBtn.classList.add('ready'); }
+  if (!done && t > LAST_T0 + T.heart[0] + 2.5) { done = true; msgEl.textContent = MESSAGE; msgEl.style.opacity = 1; replayBtn.classList.add('ready'); }
   requestAnimationFrame(frame);
 }
 function seek(to) {                                          // jump the clock (used for previews)
